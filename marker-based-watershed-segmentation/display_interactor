@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jul 23 09:50:19 2018
+
+@author: imananwarzai
+"""
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jul 12 15:38:55 2018
+
+@author: imananwarzai
+"""
+
+import nibabel as nib
+from dipy.viz import window, actor, ui
+import numpy as np
+import scipy as sp
+from skimage.filters import threshold_otsu
+from skimage.morphology import watershed
+from dipy.viz.interactor import CustomInteractorStyle as cis
+renderer = window.renderer()  
+result_position = ''
+result_value = ''
+data = np.zeros(3)
+
+class CustomInteractorStyle2(cis):
+    
+    def __init__(self):
+        super(CustomInteractorStyle2, self).__init__()
+        
+    def on_left_button_down(self, obj, evt):
+        self.left_button_down = True
+        prop = self.get_prop_at_event_position()
+        if prop is not None:
+            self.selected_props["left_button"].add(prop)
+            self.propagate_event(evt, prop)
+
+        if not self.event.abort_flag:
+            self.default_interactor.OnRightButtonDown()
+
+    def on_left_button_up(self, obj, evt):
+        self.left_button_down = False
+        self.propagate_event(evt, *self.selected_props["left_button"])
+        self.selected_props["left_button"].clear()
+        self.default_interactor.OnRightButtonUp()
+        
+    def on_right_button_down(self, obj, evt):
+        self.right_button_down = True
+        prop = self.get_prop_at_event_position()
+        if prop is not None:
+            self.selected_props["right_button"].add(prop)
+            self.propagate_event(evt, prop)
+
+        if not self.event.abort_flag:
+            self.default_interactor.OnMiddleButtonDown()
+
+    def on_right_button_up(self, obj, evt):
+        self.right_button_down = False
+        self.propagate_event(evt, *self.selected_props["right_button"])
+        self.selected_props["right_button"].clear()
+        self.default_interactor.OnMiddleButtonUp()
+
+show_m = window.ShowManager(renderer, size=(1200, 900), interactor_style=CustomInteractorStyle2())
+show_m.initialize()
+   
+def show_slices_2d(s): 
+    global renderer
+    #renderer = window.Renderer()
+    renderer.background((0.5, 0.5, 0.5))
+    slice_actor = actor.slicer(s)
+    cnt = 0
+    X, Y, Z = slice_actor.shape[:3]    
+    rows = int(Z/15) - 3
+    cols = 15
+    border = 10
+    for j in range(rows):
+        for i in range(cols):
+            slice_mosaic = slice_actor.copy()
+            slice_mosaic.display(None, None, cnt)
+            slice_mosaic.SetPosition((X + border) * i,
+                                     0.5 * cols * (Y + border) - (Y + border) * j,
+                                     0)
+            slice_mosaic.SetInterpolate(False)
+            renderer.add(slice_mosaic)
+            cnt += 1
+            if cnt > Z:
+                break
+        if cnt > Z:
+            break        
+    #renderer.add(slice_actor)
+    renderer.reset_camera()
+    renderer.zoom(1.4)    
+    window.show(renderer, size=(600, 600), reset_camera=False)
+
+def segment_and_isolate(in_array):
+    img = in_array.copy() 
+    blur = sp.ndimage.gaussian_filter(img, sigma=2)
+    closing = sp.ndimage.morphology.grey_closing(blur, size=(17,17,17))
+    erosion = sp.ndimage.morphology.grey_erosion(closing, size=(0,0,0))
+    thresh = threshold_otsu(erosion)
+    img_bin = erosion <= thresh
+    img_bin = img_bin + np.zeros(img.shape)
+    opening = sp.ndimage.grey_opening(img_bin, size=(3,3,3))
+    sure_bg = sp.ndimage.morphology.grey_dilation(opening, size=(13,13,13))
+    dist_transform = sp.ndimage.morphology.distance_transform_edt(opening)
+    sure_fg = np.clip(dist_transform,0.7*dist_transform.max(),255)
+    sure_fg = np.where(dist_transform < 0.7*dist_transform.max(), dist_transform, 255)
+    sure_fg = np.where(sure_fg > 0.7*dist_transform.max(), sure_fg, 0)
+    sure_fg = np.uint8(sure_fg)
+    unknown = sp.subtract(sure_bg,sure_fg).astype(np.uint8)
+    print(sure_bg.max(), sure_fg.max())
+    show_slices_2d(unknown*255)
+    show_slices_2d(sure_fg)
+    show_slices_2d(sure_bg)
+    markers, retval = sp.ndimage.label(sure_fg)
+    markers = markers+1
+    markers[unknown==0] = 255
+    markers = watershed(img, markers) 
+    img[markers != 255] = 0 
+    
+    blur = sp.ndimage.gaussian_filter(img, sigma=21)
+    closing = sp.ndimage.morphology.grey_closing(blur, size=(5,5,5))
+    erosion = sp.ndimage.morphology.grey_erosion(closing, size=(1,1,1))
+    thresh = threshold_otsu(erosion)
+    img_bin = erosion <= thresh
+    img_bin = img_bin + np.zeros(img.shape)
+    opening = sp.ndimage.grey_opening(img_bin, size=(3,3,3))
+    sure_bg = sp.ndimage.morphology.grey_dilation(opening, size=(7,7,7))
+    dist_transform = sp.ndimage.morphology.distance_transform_edt(opening)
+    sure_fg = np.clip(dist_transform,0.7*dist_transform.max(),255)
+    sure_fg = np.where(dist_transform < 0.7*dist_transform.max(), dist_transform, 255)
+    sure_fg = np.where(sure_fg > 0.7*dist_transform.max(), sure_fg, 0)
+    sure_fg = np.uint8(sure_fg)
+    unknown = sp.subtract(sure_bg,sure_fg).astype(np.uint8)
+    markers, retval = sp.ndimage.label(sure_fg)
+    markers = markers+1
+    markers[unknown==0] = 255
+    markers = watershed(img, markers)
+    img[markers != 255] = 0 
+    return img
+def left_click_callback_mosaic(obj, ev):
+    global result_position
+    global result_value
+    global data
+    """Get the value of the clicked voxel and show it in the panel."""
+    event_pos = show_m.iren.GetEventPosition()
+
+    obj.picker.Pick(event_pos[0],
+                    event_pos[1],
+                    0,
+                    show_m.ren)
+
+    i, j, k = obj.picker.GetPointIJK()
+    result_position.message = '({}, {}, {})'.format(str(i), str(j), str(k))
+    result_value.message = '%.8f' % data[i, j, k]
+def left_click_callback(obj, ev):
+    global result_position
+    global result_value
+    global data
+    """Get the value of the clicked voxel and show it in the panel."""
+    event_pos = show_m.iren.GetEventPosition()
+
+    obj.picker.Pick(event_pos[0],
+                    event_pos[1],
+                    0,
+                    show_m.ren)
+
+    i, j, k = obj.picker.GetPointIJK()
+    result_position.message = '({}, {}, {})'.format(str(i), str(j), str(k))
+    result_value.message = '%.8f' % data[i, j, k]
+def show_slices_segmented_2d(imm): 
+    global show_m
+    global renderer
+    global result_position
+    global result_value
+    global data
+    s = imm.get_data()
+    data = s
+    affine = imm.affine
+    renderer.background((0.5, 0.5, 0.5))
+    mean, std = data[data > 0].mean(), data[data > 0].std()
+    value_range = (mean - 0.5 * std, mean + 1.5 * std)
+    slice_actor = actor.slicer(data, affine, value_range)
+    slice_actor2 = slice_actor.copy()
+    slice_actor2.display(slice_actor2.shape[0]//2, None, None)
+    fa = imm.get_data()
+    lut = actor.colormap_lookup_table(scale_range=(0, 255),
+                                  hue_range=(0.4, 1.),
+                                  saturation_range=(1, 1.),
+                                  value_range=(0., 1.))
+    
+    fa_actor = actor.slicer(fa, affine, lookup_colormap=lut)
+    label_position = ui.TextBlock2D(text='Position:')
+    label_value = ui.TextBlock2D(text='Value:')
+    result_position = ui.TextBlock2D(text='')
+    result_value = ui.TextBlock2D(text='')
+    panel_picking = ui.Panel2D(center=(200, 120),
+                        size=(250, 125),
+                        color=(0, 0, 0),
+                        opacity=0.75,
+                        align="left")
+    panel_picking.add_element(label_position, 'relative', (0.1, 0.55))
+    panel_picking.add_element(label_value, 'relative', (0.1, 0.25))
+    panel_picking.add_element(result_position, 'relative', (0.45, 0.55))
+    panel_picking.add_element(result_value, 'relative', (0.45, 0.25))
+    fa_actor.SetInterpolate(False)
+    fa_actor.AddObserver('LeftButtonPressEvent', left_click_callback, 1.0)
+    renderer.projection('parallel')   
+    result_position.message = ''
+    result_value.message = ''   
+    out_img = segment_and_isolate(s)
+    slice_actor = actor.slicer(s)
+    slice_out_actor = actor.slicer(out_img)
+    cnt = 0
+    X, Y, Z = slice_actor.shape[:3]    
+    rows = int(Z/15) - 3
+    cols = 15
+    border = 20
+    for j in range(rows):
+        for i in range(cols):
+            slice_mosaic = slice_actor.copy()
+            slice_out_mosaic = slice_out_actor.copy()
+            slice_mosaic.display(None, None, cnt)
+            slice_out_mosaic.display(None, None, cnt)
+            slice_mosaic.SetPosition((X + border) * 2*i,
+                                     0.5 * cols * (Y + border) - (Y + border) * j,
+                                     0)
+            slice_out_mosaic.SetPosition((X + border) * (2*i+1),
+                                     0.5 * cols * (Y + border) - (Y + border) * (j),
+                                     0)
+            slice_mosaic.SetInterpolate(False)
+            slice_out_mosaic.SetInterpolate(False)
+            slice_mosaic.AddObserver('LeftButtonPressEvent',
+                             left_click_callback_mosaic,
+                             1.0)
+            slice_out_mosaic.AddObserver('LeftButtonPressEvent',
+                             left_click_callback_mosaic,
+                             1.0)
+            renderer.add(slice_mosaic)
+            renderer.add(slice_out_mosaic)
+            cnt += 1
+            if cnt > Z:
+                break
+        if cnt > Z:
+            break
+    renderer.reset_camera()
+    renderer.zoom(1.4)
+    renderer.add(panel_picking)
+    show_m.start()
+    print("done")
+
+im = nib.load('/Users/imananwarzai/Downloads/sub-OAS30015_sess-d0116_run-02_T1w.nii')
+show_slices_segmented_2d(im)
